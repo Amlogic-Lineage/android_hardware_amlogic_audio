@@ -658,7 +658,7 @@ size_t aml_alsa_input_read(struct audio_stream_in *stream,
         }
         if (ret >= 0) {
             nodata_count = 0;
-            ALOGV("ret:%d read_bytes:%d, bytes:%d ",ret,read_bytes,bytes);
+            ALOGV("ret:%d read_bytes:%zu, bytes:%zu ",ret,read_bytes,bytes);
         } else if (ret != -EAGAIN ) {
             ALOGE("%s:%d, pcm_read fail, ret:%#x, error info:%s", __func__, __LINE__, ret, strerror(errno));
             return ret;

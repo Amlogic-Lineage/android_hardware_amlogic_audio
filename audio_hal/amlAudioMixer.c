@@ -20,6 +20,7 @@
 
 #define __USE_GNU
 #include <cutils/log.h>
+#include <inttypes.h>
 #include <errno.h>
 #include <pthread.h>
 #include <sys/prctl.h>
@@ -146,7 +147,7 @@ int init_mixer_input_port(struct amlAudioMixer *audio_mixer,
     port = new_input_port(buf_frames, config, flags, volume, direct_on);
     port_index = port->port_index;
     if (audio_mixer->in_ports[port_index] == NULL) {
-        ALOGI("++%s port index %d, size %d frames", __func__, port_index, buf_frames);
+        ALOGI("++%s port index %d, size %zu frames", __func__, port_index, buf_frames);
         audio_mixer->in_ports[port_index] = port;
     } else {
         ALOGE("%s(), fatal error, inport index %d already exists!", __func__, port_index);
@@ -160,7 +161,7 @@ int init_mixer_input_port(struct amlAudioMixer *audio_mixer,
     }
 
     port->initial_frames = aml_out->frame_write_sum;
-    ALOGI("%s(), port->initial_frames: %lld", __func__, port->initial_frames);
+    ALOGI("%s(), port->initial_frames: %"PRIu64"", __func__, port->initial_frames);
 
     return 0;
 }
@@ -342,7 +343,7 @@ size_t get_outport_data_avail(struct output_port *outport)
 int set_outport_data_avail(struct output_port *outport, size_t avail)
 {
     if (avail > outport->data_buf_len) {
-        ALOGE("%s(), invalid avail %u", __func__, avail);
+        ALOGE("%s(), invalid avail %zu", __func__, avail);
         return -EINVAL;
     }
     outport->bytes_avail = avail;
@@ -487,7 +488,7 @@ static int mixer_update_tstamp(struct amlAudioMixer *audio_mixer)
             signed_frames = 0;
         }
         in_port->presentation_frames = in_port->initial_frames + signed_frames;
-        ALOGV("%s() present frames:%lld, initial %lld, consumed %lld, sec:%ld, nanosec:%ld",
+        ALOGV("%s() present frames:%"PRIu64", initial %"PRIu64", consumed %"PRIu64", sec:%ld, nanosec:%ld",
                 __func__,
                 in_port->presentation_frames,
                 in_port->initial_frames,
@@ -821,7 +822,7 @@ static int retrieve_hwsync_header(struct amlAudioMixer *audio_mixer,
     memset(&header, 0, sizeof(struct hw_avsync_header));
     if (1) {
         int diff_ms = 0;
-        ALOGV("direct out port bytes before cbk %d", get_outport_data_avail(out_port));
+        ALOGV("direct out port bytes before cbk %zu", get_outport_data_avail(out_port));
         if (!in_port->meta_data_cbk) {
             ALOGE("no meta_data_cbk set!!");
             return -EINVAL;
@@ -984,7 +985,7 @@ static int mixer_do_mixing_32bit(struct amlAudioMixer *audio_mixer)
 
     if (sys_only) {
         frames = in_port_sys->data_buf_frame_cnt;
-        ALOGV("%s() sys_only, frames %d", __func__, frames);
+        ALOGV("%s() sys_only, frames %zu", __func__, frames);
         mixing_len_bytes = in_port_sys->data_len_bytes;
         data_sys = (int16_t *)in_port_sys->data;
         if (DEBUG_DUMP) {
@@ -1030,7 +1031,7 @@ static int mixer_do_mixing_32bit(struct amlAudioMixer *audio_mixer)
         //dirct_vol = get_inport_volume(in_port_drct);
         mixing_len_bytes = in_port_drct->data_len_bytes;
         data_drct = (int16_t *)in_port_drct->data;
-        ALOGV("%s() direct_only, inport consumed %d",
+        ALOGV("%s() direct_only, inport consumed %zu",
                 __func__, get_inport_consumed_size(in_port_drct));
 
         if (is_inport_hwsync(in_port_drct) && in_port_drct->bytes_to_insert < mixing_len_bytes) {
@@ -1056,7 +1057,7 @@ static int mixer_do_mixing_32bit(struct amlAudioMixer *audio_mixer)
             frames = mixing_len_bytes / in_port_drct->cfg.frame_size;
             //cpy_16bit_data_with_gain(data_mixed, data_drct,
             //        in_port_drct->data_len_bytes, dirct_vol);
-            ALOGV("%s() direct_only, frames %d, bytes %d", __func__, frames, mixing_len_bytes);
+            ALOGV("%s() direct_only, frames %zu, bytes %zu", __func__, frames, mixing_len_bytes);
 
             frames_written = do_mixing_2ch(audio_mixer->tmp_buffer, data_drct,
                 frames, in_port_drct->cfg, out_port->cfg);
@@ -1204,7 +1205,7 @@ static int mixer_do_mixing_16bit(struct amlAudioMixer *audio_mixer)
 
     if (sys_only) {
         frames = in_port_sys->data_buf_frame_cnt;
-        ALOGV("%s() sys_only, frames %d", __func__, frames);
+        ALOGV("%s() sys_only, frames %zu", __func__, frames);
         mixing_len_bytes = in_port_sys->data_len_bytes;
         data_sys = (int16_t *)in_port_sys->data;
         if (DEBUG_DUMP) {
@@ -1238,7 +1239,7 @@ static int mixer_do_mixing_16bit(struct amlAudioMixer *audio_mixer)
         //dirct_vol = get_inport_volume(in_port_drct);
         mixing_len_bytes = in_port_drct->data_len_bytes;
         data_drct = (int16_t *)in_port_drct->data;
-        ALOGV("%s() direct_only, inport consumed %d",
+        ALOGV("%s() direct_only, inport consumed %zu",
                 __func__, get_inport_consumed_size(in_port_drct));
 
         if (is_inport_hwsync(in_port_drct) && in_port_drct->bytes_to_insert < mixing_len_bytes) {
@@ -1259,7 +1260,7 @@ static int mixer_do_mixing_16bit(struct amlAudioMixer *audio_mixer)
         } else {
             ALOGV("%s() direct_only, vol %f", __func__, dirct_vol);
             frames = mixing_len_bytes / in_port_drct->cfg.frame_size;
-            ALOGV("%s() direct_only, frames %d, bytes %d", __func__, frames, mixing_len_bytes);
+            ALOGV("%s() direct_only, frames %zu, bytes %zu", __func__, frames, mixing_len_bytes);
 
             frames_written = do_mixing_2ch(audio_mixer->tmp_buffer, data_drct,
                 frames, in_port_drct->cfg, out_port->cfg);
