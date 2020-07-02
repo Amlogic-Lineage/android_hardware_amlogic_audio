@@ -3534,7 +3534,7 @@ static int out_get_presentation_position (const struct audio_stream_out *stream,
         return -EINVAL;
 
     if (adev->debug_flag) {
-        ALOGI("frames_written_hw %llu postion %llu frame_latency %d",frames_written_hw ,*frames,frame_latency);
+        ALOGI("frames_written_hw %" PRIu64 " postion %" PRIu64 " frame_latency %d",frames_written_hw ,*frames,frame_latency);
         ALOGI("out_get_presentation_position out %p %"PRIu64", sec = %ld, nanosec = %ld\n", out, *frames, timestamp->tv_sec, timestamp->tv_nsec);
     }
     return 0;
@@ -9110,7 +9110,7 @@ dcv_rewrite:
                 else
                     bytes = PLAYBACK_PERIOD_COUNT * DEFAULT_PLAYBACK_PERIOD_SIZE * 4;
                 if (bytes != 6144)
-                    ALOGD("%s: ddp decoder size %d", __func__, bytes);
+                    ALOGD("%s: ddp decoder size %zu", __func__, bytes);
 
                 while (get_buffer_read_space(&ddp_dec->output_ring_buf) > (int)bytes) {
                     ring_buffer_read(&ddp_dec->output_ring_buf, ddp_dec->outbuf, bytes);

@@ -482,7 +482,7 @@ write:
             } else
                 return bytes;
         } else {
-            ALOGI("bytes:%d, need_drop_size=%d\n", bytes, aml_out->need_drop_size);
+            ALOGI("bytes:%zu, need_drop_size=%d\n", bytes, aml_out->need_drop_size);
             ret = pcm_write(aml_out->pcm, audio_data + aml_out->need_drop_size,
                     bytes - aml_out->need_drop_size);
             aml_out->need_drop_size = 0;
