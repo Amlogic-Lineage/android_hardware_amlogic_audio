@@ -287,7 +287,7 @@ exit:
         //TODO
         if (out->out_device & AUDIO_DEVICE_OUT_ALL_A2DP)
             latency_frames = mixer_get_inport_latency_frames(audio_mixer, out->port_index)
-                    + a2dp_out_get_latency(stream);
+                    + a2dp_out_get_latency(stream) * out->hal_rate / 1000;
         else
             latency_frames = mixer_get_inport_latency_frames(audio_mixer, out->port_index)
                     + mixer_get_outport_latency_frames(audio_mixer);
@@ -633,7 +633,27 @@ static int out_get_presentation_position_port(
     }
 
     if (out->out_device & AUDIO_DEVICE_OUT_ALL_A2DP) {
-        *frames = frames_written_hw;
+        struct timespec stCurTimestamp;
+        int64_t  curr_nanoseconds = 0;
+        int64_t  pre_nanoseconds = 0;
+        int64_t  time_diff = 0;
+        int drift_frames = 0;
+
+        pre_nanoseconds = (long long)out->timestamp.tv_sec * 1000000000 + (long long)out->timestamp.tv_nsec;
+        clock_gettime(CLOCK_MONOTONIC, &stCurTimestamp);
+        curr_nanoseconds = (long long)stCurTimestamp.tv_sec * 1000000000 + (long long)stCurTimestamp.tv_nsec;
+        time_diff = curr_nanoseconds - pre_nanoseconds;
+        if (time_diff <= 100*1000000) {
+            drift_frames = (time_diff * out->hal_rate) / 1000000000;
+            if (adev->debug_flag > 0)
+                ALOGI("[%s:%d] normal time diff=%" PRId64 " drift_frames=%d", __func__, __LINE__,time_diff, drift_frames);
+        } else {
+            if (adev->debug_flag > 0)
+                ALOGW("[%s:%d] big time diff:%" PRId64, __func__, __LINE__, time_diff);
+            time_diff = 0;
+            drift_frames = 0;
+        }
+        *frames = frames_written_hw + drift_frames;
         *timestamp = out->timestamp;
     } else if (!adev->audio_patching) {
         ret = mixer_get_presentation_position(audio_mixer,
@@ -1033,7 +1053,7 @@ ssize_t mixer_main_buffer_write_sm (struct audio_stream_out *stream, const void 
     audio_hwsync_t *hw_sync = aml_out->hwsync;
 
     if (adev->debug_flag) {
-        ALOGI("%s:%p write in %zu!, format = 0x%x\n", __FUNCTION__, stream, bytes, aml_out->hal_internal_format);
+        ALOGI("%s:%p write in %zu!, format = 0x%x, hw_sync_mode:%d", __FUNCTION__, stream, bytes, aml_out->hal_internal_format, aml_out->hw_sync_mode);
     }
     int return_bytes = bytes;
 
@@ -1076,162 +1096,6 @@ ssize_t mixer_main_buffer_write_sm (struct audio_stream_out *stream, const void 
     return return_bytes;
 }
 
-static const struct pcm_config config_bt = {
-    .channels = 1,
-    .rate = VX_NB_SAMPLING_RATE,
-    .period_size = 256,
-    .period_count = PLAYBACK_PERIOD_COUNT,
-    .format = PCM_FORMAT_S16_LE,
-};
-
-static int open_btSCO_device(struct aml_audio_device *adev, size_t frames)
-{
-    struct aml_bt_output *bt = &adev->bt_output;
-    unsigned int card = adev->card;
-    unsigned int port = PORT_PCM;
-    struct pcm *pcm = NULL;
-    struct pcm_config cfg;
-    size_t resample_in_frames = 0;
-    size_t output_frames = 0;
-    int ret = 0;
-
-    /* check to update port */
-    port = alsa_device_update_pcm_index(port, PLAYBACK);
-    ALOGD("%s(), open card(%d) port(%d)", __func__, card, port);
-    cfg = config_bt;
-    pcm = pcm_open(card, port, PCM_OUT, &cfg);
-    if (!pcm_is_ready(pcm)) {
-        ALOGE("%s() cannot open pcm_out: %s, card %d, device %d",
-                __func__, pcm_get_error(pcm), card, port);
-        pcm_close (pcm);
-        ret = -ENOENT;
-        goto err;
-    }
-
-    bt->pcm_bt = pcm;
-    ret = create_resampler(MM_FULL_POWER_SAMPLING_RATE,
-                            VX_NB_SAMPLING_RATE,
-                            config_bt.channels,
-                            RESAMPLER_QUALITY_DEFAULT,
-                            NULL,
-                            &bt->resampler);
-    if (ret != 0) {
-        ALOGE("cannot create resampler for bt");
-        goto err_res;
-    }
-
-    output_frames = frames * VX_NB_SAMPLING_RATE / MM_FULL_POWER_SAMPLING_RATE + 1;
-    bt->bt_out_buffer = calloc(1, output_frames * 2);
-    if (bt->bt_out_buffer == NULL) {
-        ALOGE ("cannot malloc memory for bt_out_buffer");
-        ret = -ENOMEM;
-        goto err_out_buf;
-    }
-    bt->bt_out_frames = 0;
-
-    bt->resampler_buffer = calloc(1, frames * 2);
-    if (bt->resampler_buffer == NULL) {
-        ALOGE ("cannot malloc memory for resampler_buffer");
-        ret = -ENOMEM;
-        goto err_resampler_buf;
-    }
-    bt->resampler_in_frames = 0;
-    bt->resampler_buffer_size_in_frames = frames;
-
-    return 0;
-
-err_resampler_buf:
-    free(bt->bt_out_buffer);
-err_out_buf:
-    release_resampler(bt->resampler);
-    bt->resampler = NULL;
-err_res:
-    pcm_close(bt->pcm_bt);
-    bt->pcm_bt = NULL;
-err:
-    return ret;
-}
-
-static void close_btSCO_device(struct aml_audio_device *adev)
-{
-    struct aml_bt_output *bt = &adev->bt_output;
-    struct pcm *pcm = bt->pcm_bt;
-
-    ALOGD("%s() ", __func__);
-    if (pcm) {
-        pcm_close(pcm);
-        pcm = NULL;
-    }
-    if (bt->resampler) {
-        release_resampler(bt->resampler);
-        bt->resampler = NULL;
-    }
-    if (bt->bt_out_buffer)
-        free(bt->bt_out_buffer);
-    if (bt->resampler_buffer)
-        free(bt->resampler_buffer);
-}
-
-ssize_t write_to_sco(struct audio_stream_out *stream,
-        const void *buffer, size_t bytes)
-{
-    struct aml_stream_out *aml_out = (struct aml_stream_out *)stream;
-    struct aml_audio_device *adev = aml_out->dev;
-    struct aml_bt_output *bt = &adev->bt_output;
-    size_t frame_size = audio_stream_out_frame_size(stream);
-    size_t in_frames = bytes / frame_size;
-    size_t out_frames = in_frames * VX_NB_SAMPLING_RATE / MM_FULL_POWER_SAMPLING_RATE + 1;;
-    int16_t *in_buffer = (int16_t *)buffer;
-    int16_t *out_buffer = (int16_t *)bt->bt_out_buffer;
-    unsigned int i;
-    int ret = 0;
-
-    /* Discard right channel */
-    for (i = 1; i < in_frames; i++) {
-        in_buffer[i] = in_buffer[i * 2];
-    }
-    /* The frame size is now half */
-    frame_size /= 2;
-
-    //prepare input buffer
-    if (bt->resampler) {
-        size_t frames_needed = bt->resampler_in_frames + in_frames;
-        if (bt->resampler_buffer_size_in_frames < frames_needed) {
-            bt->resampler_buffer_size_in_frames = frames_needed;
-            bt->resampler_buffer = (int16_t *)realloc(bt->resampler_buffer,
-                    bt->resampler_buffer_size_in_frames * frame_size);
-        }
-
-        memcpy(bt->resampler_buffer + bt->resampler_in_frames,
-                buffer, in_frames * frame_size);
-        bt->resampler_in_frames += in_frames;
-
-        size_t res_in_frames = bt->resampler_in_frames;
-        bt->resampler->resample_from_input(bt->resampler,
-                     bt->resampler_buffer, &res_in_frames,
-                     (int16_t*)bt->bt_out_buffer, &out_frames);
-        //prepare output buffer
-        bt->resampler_in_frames -= res_in_frames;
-        if (bt->resampler_in_frames) {
-            memmove(bt->resampler_buffer,
-                bt->resampler_buffer + bt->resampler_in_frames,
-                bt->resampler_in_frames * frame_size);
-        }
-    }
-
-    if (bt->pcm_bt) {
-        pcm_write(bt->pcm_bt, bt->bt_out_buffer, out_frames * frame_size);
-        if (getprop_bool("media.audiohal.btpcm"))
-            aml_audio_dump_audio_bitstreams("/data/audio/sco_8.raw", bt->bt_out_buffer, out_frames * frame_size);
-    }
-    return bytes;
-}
-
-bool is_sco_port(enum OUT_PORT outport)
-{
-    return (outport == OUTPORT_BT_SCO_HEADSET) ||
-            (outport == OUTPORT_BT_SCO);
-}
 
 ssize_t mixer_aux_buffer_write_sm(struct audio_stream_out *stream, const void *buffer,
                                size_t bytes)
@@ -1252,18 +1116,6 @@ ssize_t mixer_aux_buffer_write_sm(struct audio_stream_out *stream, const void *b
 #endif
     if (adev->debug_flag) {
         ALOGI("[%s:%d] bytes:%zu, out_device:%#x", __func__, __LINE__, bytes, adev->out_device);
-    }
-    if (is_sco_port(adev->active_outport)) {
-        int ret = 0;
-        if (!bt->active) {
-            open_btSCO_device(adev, in_frames);
-            bt->active = true;
-        }
-
-        return write_to_sco(stream, buffer, bytes);
-    } else if (bt->active) {
-        close_btSCO_device(adev);
-        bt->active = false;
     }
 
     if (adev->out_device != aml_out->out_device) {
@@ -1346,7 +1198,18 @@ exit:
     aml_out->lasttimestamp.tv_sec = aml_out->timestamp.tv_sec;
     aml_out->lasttimestamp.tv_nsec = aml_out->timestamp.tv_nsec;
 
-    aml_out->last_frames_postion = aml_out->frame_write_sum;
+
+    if (aml_out->out_device & AUDIO_DEVICE_OUT_ALL_A2DP) {
+        uint64_t latency_frames = mixer_get_inport_latency_frames(sm->mixerData, aml_out->port_index)
+                + a2dp_out_get_latency(stream) * aml_out->hal_rate / 1000;
+        if (aml_out->frame_write_sum > latency_frames)
+            aml_out->last_frames_postion = aml_out->frame_write_sum - latency_frames;
+        else
+            aml_out->last_frames_postion = 0;
+    } else {
+        aml_out->last_frames_postion = aml_out->frame_write_sum;
+    }
+
     ALOGV("%s(), frame write sum %"PRIu64"", __func__, aml_out->frame_write_sum);
     return bytes;
 }

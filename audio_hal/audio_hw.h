@@ -384,6 +384,7 @@ struct aml_audio_device {
     struct aml_arc_hdmi_desc hdmi_descs;
     int arc_hdmi_updated;
     int a2dp_updated;
+    bool a2dp_connected;
     struct aml_native_postprocess native_postprocess;
     /* to classify audio patch sources */
     enum patch_src_assortion patch_src;
@@ -506,6 +507,7 @@ struct aml_audio_device {
     unsigned int dtv_droppcm_size;
     int need_reset_ringbuffer;
     unsigned int tv_mute;
+    unsigned int passthrough_mute;
     int sub_apid;
     int sub_afmt;
     int reset_dtv_audio;

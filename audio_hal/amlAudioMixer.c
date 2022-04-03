@@ -36,6 +36,7 @@
 
 #include "audio_hw.h"
 #include "audio_a2dp_hw.h"
+#include "audio_bt_sco.h"
 
 #define MIXER_IN_BUFFER_SIZE (512*4)
 #define MIXER_OUT_BUFFER_SIZE MIXER_IN_BUFFER_SIZE
@@ -276,6 +277,8 @@ int mixer_write_inport(struct amlAudioMixer *audio_mixer,
         enum MIXER_INPUT_PORT port_index, const void *buffer, int bytes)
 {
     struct input_port *port = audio_mixer->in_ports[port_index];
+    struct aml_audio_device     *adev = audio_mixer->adev; 
+    int j = 0;
     int written = 0;
 
     if (!port) {
@@ -288,6 +291,11 @@ int mixer_write_inport(struct amlAudioMixer *audio_mixer,
         //audio_fade_func(buffer, bytes, 1);
         //aml_hwsync_set_tsync_resume();
     //}
+    // do audio process here
+    /*audio effect process for speaker*/
+    for (j = 0; j < adev->native_postprocess.num_postprocessors; j++) {
+        audio_post_process(adev->native_postprocess.postprocessors[j], (int16_t *)buffer, bytes/4);
+    }
     written = port->write(port, buffer, bytes);
     if (/*port_index == MIXER_INPUT_PORT_PCM_SYSTEM && */get_inport_state(port) != ACTIVE) {
         ALOGI("port index %d is active now", port_index);
@@ -458,6 +466,8 @@ static int mixer_output_write(struct amlAudioMixer *audio_mixer)
         ALOGV("++%s start", __func__);
         if (out && (out->out_device & AUDIO_DEVICE_OUT_ALL_A2DP))
             a2dp_out_write(&out->stream, out_port->data_buf, out_port->bytes_avail);
+        else if (out && is_sco_port(out->dev->active_outport))
+            write_to_sco(&out->stream, out_port->data_buf, out_port->bytes_avail);
         else
             out_port->write(out_port, out_port->data_buf, out_port->bytes_avail);
         set_outport_data_avail(out_port, 0);

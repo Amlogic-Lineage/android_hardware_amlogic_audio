@@ -122,6 +122,7 @@
 #include "sub_mixing_factory.h"
 #include "aml_malloc_debug.h"
 #include "audio_a2dp_hw.h"
+#include "audio_bt_sco.h"
 
 #define CARD_AMLOGIC_BOARD 0
 
@@ -1715,14 +1716,10 @@ static uint32_t out_get_latency_frames (const struct audio_stream_out *stream)
 static uint32_t out_get_latency (const struct audio_stream_out *stream)
 {
     const struct aml_stream_out *out = (const struct aml_stream_out *) stream;
-    uint32_t a2dp_delay = 0;
 
-    if (out->out_device & AUDIO_DEVICE_OUT_ALL_A2DP) {
-        a2dp_delay = a2dp_out_get_latency(stream);
-    }
     snd_pcm_sframes_t frames = out_get_latency_frames (stream);
     //snd_pcm_sframes_t frames = DEFAULT_PLAYBACK_PERIOD_SIZE * PLAYBACK_PERIOD_COUNT;
-    return (frames * 1000) / out->config.rate + a2dp_delay;
+    return (frames * 1000) / out->config.rate;
 }
 
 #define FLOAT_ZERO 0.000001
@@ -4888,6 +4885,9 @@ static void adev_close_output_stream(struct audio_hw_device *dev,
             }
         }
     }
+    if (out->out_device & AUDIO_DEVICE_OUT_ALL_A2DP) {
+        a2dp_output_disable(stream);
+    }
 
     /*when open dts decoder, the dolby lib is changed, so we need restore it*/
     if (out->hal_internal_format == AUDIO_FORMAT_DTS) {
@@ -5092,6 +5092,7 @@ static int aml_audio_output_routing(struct audio_hw_device *dev,
             break;
         case OUTPORT_BT_SCO:
         case OUTPORT_BT_SCO_HEADSET:
+            close_btSCO_device(aml_dev);
             break;
         case OUTPORT_A2DP:
             ALOGE("%s: active_outport = %s A2DP off", __func__, outport2String(aml_dev->active_outport));
@@ -5236,6 +5237,7 @@ static int adev_set_parameters (struct audio_hw_device *dev, const char *kvpairs
             ALOGI("bHDMIConnected: %d\n", val);
         } else if (val & AUDIO_DEVICE_OUT_ALL_A2DP) {
             adev->a2dp_updated = 1;
+            adev->a2dp_connected = false;
             adev->out_device &= (~val);
             ALOGI("adev_set_parameters a2dp disconnect: %x, device=%x\n", val, adev->out_device);
         }
@@ -5259,7 +5261,16 @@ static int adev_set_parameters (struct audio_hw_device *dev, const char *kvpairs
         } else if (val & AUDIO_DEVICE_OUT_ALL_A2DP) {
             adev->a2dp_updated = 1;
             adev->out_device |= val;
+            adev->a2dp_connected = true;
             ALOGI("adev_set_parameters a2dp connect: %x, device=%x\n", val, adev->out_device);
+        }
+        goto exit;
+    }
+
+    ret = str_parms_get_str (parms, "BT_SCO", value, sizeof (value) );
+    if (ret >= 0) {
+        if (strcmp (value, AUDIO_PARAMETER_VALUE_OFF) == 0) {
+            close_btSCO_device(adev);
         }
         goto exit;
     }
@@ -6065,6 +6076,7 @@ static int adev_set_parameters (struct audio_hw_device *dev, const char *kvpairs
         ALOGI ("Amlogic_HAL - %s: TV-Mute:%d.", __FUNCTION__,tv_mute);
         adev->need_reset_ringbuffer = tv_mute;
         adev->tv_mute = tv_mute;
+        adev->hw_mixer.mute_main_flag = tv_mute;
         goto exit;
     }
     ret = str_parms_get_str(parms, "direct-mode", value, sizeof(value));
@@ -6761,10 +6773,10 @@ int do_output_standby_l(struct audio_stream *stream)
     }
 
     if ((aml_out->out_device & AUDIO_DEVICE_OUT_ALL_A2DP) && aml_out->a2dp_out) {
-        a2dp_out_standby(stream);
         if ((eDolbyMS12Lib == adev->dolby_lib_type) && (ms12->dolby_ms12_enable == true)) {
             get_dolby_ms12_cleanup(&adev->ms12);
         }
+        a2dp_out_standby(stream);
     }
 
     /*
@@ -7633,10 +7645,11 @@ ssize_t audio_hal_data_processing(struct audio_stream_out *stream,
             }
         } else {
             float gain_speaker = 1.0;
-            if (!adev->is_TV)
+            if ((aml_out->out_device & AUDIO_DEVICE_OUT_ALL_A2DP)) {
+                if (adev->audio_patching)
+                    gain_speaker = adev->sink_gain[OUTPORT_A2DP];
+            } else if (!adev->is_TV)
                 gain_speaker = adev->sink_gain[adev->active_outport];
-            else if (aml_out->out_device & AUDIO_DEVICE_OUT_ALL_A2DP)
-                gain_speaker = adev->sink_gain[OUTPORT_A2DP];
             else
                 gain_speaker = adev->sink_gain[OUTPORT_SPEAKER];
             /*
@@ -7787,7 +7800,7 @@ ssize_t hw_write (struct audio_stream_out *stream
             }
         }
     }
-    if (aml_out->pcm || aml_out->a2dp_out) {
+    if (aml_out->pcm || aml_out->a2dp_out || is_sco_port(adev->active_outport)) {
 #ifdef ADD_AUDIO_DELAY_INTERFACE
         ret = aml_audio_delay_process(AML_DELAY_OUTPORT_ALL, (void *) tmp_buffer, bytes, output_format);
         if (ret < 0) {
@@ -7822,6 +7835,8 @@ ssize_t hw_write (struct audio_stream_out *stream
                     write_size = adjust_bytes > 1024 ? 1024 : adjust_bytes;
                     if (adev->out_device & AUDIO_DEVICE_OUT_ALL_A2DP) {
                         ret = a2dp_out_write(stream, (void*)buf, write_size);
+                    } else if (is_sco_port(adev->active_outport)) {
+                        ret = write_to_sco(stream, buffer, bytes);
                     } else {
                         ret = aml_alsa_output_write(stream, (void*)buf, write_size);
                     }
@@ -7844,6 +7859,8 @@ ssize_t hw_write (struct audio_stream_out *stream
         }
         if (adev->out_device & AUDIO_DEVICE_OUT_ALL_A2DP) {
             ret = a2dp_out_write(stream, buffer, bytes);
+        } else if (is_sco_port(adev->active_outport)) {
+            ret = write_to_sco(stream, buffer, bytes);
         } else {
             ret = aml_alsa_output_write(stream, (void *) buffer, bytes);
         }
@@ -8995,6 +9012,8 @@ ssize_t mixer_main_buffer_write (struct audio_stream_out *stream, const void *bu
                     if (!adev->is_TV && (adev->audio_patching)) {
                         float out_gain = 1.0f;
                         out_gain = adev->sink_gain[adev->active_outport];
+                        if (adev->tv_mute)
+                            out_gain = 0.0f;
                         if (!audio_is_linear_pcm(aml_out->hal_internal_format)) {
                             dolby_ms12_set_main_volume(out_gain);
                         } else {
@@ -9098,6 +9117,9 @@ dcv_rewrite:
                            patch->sample_rate = ddp_dec->pcm_out_info.sample_rate;
                     if (ddp_dec->outlen_raw > 0) {
                         output_format = get_output_format(stream);
+                        if (adev->tv_mute) {
+                            memset(ddp_dec->outbuf_raw, 0, ddp_dec->outlen_raw);
+                        }
                         if (audio_hal_data_processing(stream, (void *)ddp_dec->outbuf_raw, ddp_dec->outlen_raw, &output_buffer, &output_buffer_bytes, output_format) == 0) {
                             hw_write(stream, output_buffer, output_buffer_bytes, output_format);
                         }
@@ -9682,9 +9704,6 @@ void adev_close_output_stream_new(struct audio_hw_device *dev,
     ALOGD("%s: enter usecase = %s", __func__, str_usecases[aml_out->usecase]);
     /* call legacy close to reuse codes */
     adev->active_outputs[aml_out->usecase] = NULL;
-    if (aml_out->out_device & AUDIO_DEVICE_OUT_ALL_A2DP) {
-        a2dp_output_disable(stream);
-    }
 
     if (adev->useSubMix) {
         if (aml_out->is_normal_pcm || aml_out->usecase == STREAM_PCM_HWSYNC) {
@@ -11573,6 +11592,15 @@ static int adev_set_audio_port_config (struct audio_hw_device *dev, const struct
                         }
                     }
                 }
+
+                if (aml_dev->patch_src == SRC_DTV) {
+                   if (aml_dev->sink_gain[outport] <= 0.0f) {
+                        aml_dev->passthrough_mute = 1;
+                    } else if (aml_dev->sink_gain[outport] != 0.0f) {
+                        aml_dev->passthrough_mute = 0;
+                    }
+                }
+
                 ALOGI(" - set src device[%#x](inport:%s): gain[%f]",
                             config->ext.device.type, inport2String(inport), aml_dev->src_gain[inport]);
                 ALOGI(" - set sink device[%#x](outport:%s): volume_Mb[%d], gain[%f]",
@@ -11786,6 +11814,7 @@ static int adev_open(const hw_module_t* module, const char* name, hw_device_t** 
     adev->ms12_ott_enable = false;
     adev->continuous_audio_mode = 0;
     adev->need_remove_conti_mode = false;
+    adev->passthrough_mute = 0;
     ret = property_get(DISABLE_CONTINUOUS_OUTPUT, buf, NULL);
     if (ret > 0) {
         sscanf(buf, "%d", &disable_continuous);
